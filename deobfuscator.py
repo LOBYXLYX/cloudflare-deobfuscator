@@ -1,5 +1,7 @@
 import re
 import math
+import sys
+import json
 import jsbeautifier
 
 gF = None
@@ -22,6 +24,56 @@ def _parse_int(s, radix=10):
         return math.nan
     return int(match.group(), radix)
 
+def extract_object_nums(js_code, variable):
+    search = variable + '={'
+    results = []
+    offset = 0
+
+    while True:
+        start = js_code.find(search, offset)
+        if start == -1:
+            break
+
+        start += len(variable + '=')
+        i = start
+        braces = 0
+        obj_text = ''
+
+        while i < len(js_code):
+            char = js_code[i]
+            obj_text += char
+            if char == '{':
+                braces += 1
+            elif char == '}':
+                braces -= 1
+                if braces == 0:
+                    break
+            i += 1
+
+        offset = i
+
+        obj_clean = obj_text.replace('\n', '').strip()
+        for ch in "{}:,":
+            obj_clean = obj_clean.replace(ch, f" {ch} ")
+
+        parts = obj_clean.split()
+        json_parts = []
+        for i, part in enumerate(parts):
+            if parts[i] == ':' and not parts[i-1].startswith('"'):
+                json_parts[-1] = f'"{json_parts[-1]}"'
+            json_parts.append(part)
+
+        json_string = ''.join(json_parts)
+        try:
+            parsed_object = json.loads(json_string)
+            results.append(parsed_object)
+        except json.decoder.JSONDecodeError:
+            results.append(json_string)
+
+    if not results:
+        return False #raise ValueError(f'cloudflare object not found: {variable}')
+    return results[0] if len(results) == 1 else results
+
 def a(obfuscated_string_array, _split_type):
     jE = obfuscated_string_array.split(_split_type)
     return jE
@@ -39,7 +91,7 @@ def string_array_iterator(obfuscated_string_array, parseint_array_finder, obf_fi
     while True:
         def b(c):
             nonlocal arr, string_number_subtraction
-            index = int(c) - string_number_subtraction
+            index = int(c) - int(string_number_subtraction)
             return arr[index]
         
         gF = b
@@ -55,7 +107,8 @@ def string_array_iterator(obfuscated_string_array, parseint_array_finder, obf_fi
         except Exception as e:
             arr.append(arr.pop(0))
 
-def deobfuscator_main(
+def deobfuscator(
+    javascript,
     string_number_subtraction,
     obf_find_number, 
     parseint_array_finder,
@@ -64,17 +117,20 @@ def deobfuscator_main(
 ):
     string_array_iterator(obfuscated_string_array, parseint_array_finder, obf_find_number, string_number_subtraction, _split_type)
     
+    w_var = javascript.split('=this||self')[0]
+    window_var = w_var[len(w_var) -2:len(w_var)]
+    document_var = javascript.split('=this||self,')[1].split('=')[0]
+    
     def _deobfuscator_main(code, beautify=True, parsing_booleans=True):
         # analizar codigo
         code_parts = code.split('(')
         findernum_array = []
         nums_array = []
-        found_obf_objects = 0
 
         chars = ['=', '[', '(', ':', ' ', '{', '+', ',', '', '|']
         obf_ops = {
-            'eM[': 'window[',
-            'eN[': 'document[',
+            f'{window_var}[': 'window[',
+            f'{document_var}[': 'document[',
             'void 0': 'undefined'
         }
         
@@ -85,7 +141,40 @@ def deobfuscator_main(
                 '!0': 'true',
                 '!1': 'false'
              })
+        
+        obj_seed_map = {}
+        parsed_arr_map_calls = []
              
+        for i,v in enumerate(code_parts):
+            if (v[:2].isalpha() and v[2:3] == '.' or (v[:1].isalpha() and v[1:2].isnumeric() and v[2:3] == '.')) and (v[3:4].isalpha() and v[4:5] == ')' or (v[3:4].isalpha() and v[5:6] == ')')):
+                prev = code_parts[i - 1]
+                finalprev = prev[len(prev) - 2:len(prev)]
+                finalprev2 = prev[len(prev) - 3:len(prev) - 2]
+                
+                if finalprev2 not in chars:
+                    continue
+                
+                obj_name = v[:2]
+                prop = v.split('.')[1].split(')')[0]
+                if obj_name in obj_seed_map:
+                    obj = obj_seed_map[obj_name]
+                else:
+                    obj = extract_object_nums(code, obj_name)
+                    
+                    if obj == False:
+                        obj = extract_object_nums(javascript, obj_name)
+                        
+                        if obj == False:
+                            raise ValueError(f'cloudflare object not found: {obj_name}')
+                    obj_seed_map[obj_name] = obj
+
+                parsed_arr_map_calls.append({
+                    'obj_name': v[:2],
+                    'obj': obj,
+                    'prop': prop,
+                    'call_arr_map': finalprev
+                })
+                
         for i,v in enumerate(code_parts):
             if (v[:3].isnumeric() and v[3:4] == ')') or (v[:4].isnumeric() and v[4:5] == ')'):
                 prev = code_parts[i - 1]
@@ -99,14 +188,21 @@ def deobfuscator_main(
                     number = v[:3] if (v[:3].isnumeric() and v[3:4] == ')') else v[:4]
                     findernum_array.append(f'{finalprev}({number})')
                     nums_array.append(int(number))
+        
+        # formatear
                     
-        # Format All
-                    
+        for parsed in parsed_arr_map_calls:
+            real_seed = gF(parsed['obj'][parsed['prop']])
+            obj_seeds = str(parsed['obj']).replace(' ', '').replace("'", '')
+            obj_seeds = f'{parsed["obj_name"]}={obj_seeds},' # goofy object
+
+            caller = parsed['call_arr_map']
+            code = code.replace(f'{caller}({parsed["obj_name"]}.{parsed["prop"]})', f"'{real_seed}'").replace(obj_seeds, '')
+            
+            
         for findnum, num in zip(findernum_array, nums_array):
             stringfound = gF(num)
-        
             code = code.replace(findnum, f"'{stringfound}'")
-            found_obf_objects += 1
             
         for obfop, toreplace in obf_ops.items():
             code = code.replace(obfop, toreplace)
@@ -115,42 +211,81 @@ def deobfuscator_main(
             for o in range(2, 6):
                 code = code.replace(f'{x}e{o}', str(round(eval(f'{x}e{o}'))))
         
-        print('Deobfuscated', found_obf_objects, 'Objects')
         deobfuscated = jsbeautifier.beautify(code) if beautify else code
         return deobfuscated
     return _deobfuscator_main, gF
 
-def deobfuscate(code, split_type='~'):
-    # Parse String Array Map Obfuscation
-    for i,v in enumerate(code.split('function a(')):
-        if v[:1].isalpha() and v[2:3] == ')' and len(v.split('~')) > 500:
-            variable = v[:2]
-            stringarraymap = v.split(f"return {variable}='")[1].split('.split(')[0]
-
-    if stringarraymap[(len(stringarraymap) - 1):len(stringarraymap)] == "'":
-        stringarraymap = stringarraymap.replace("'", '')
+def _deobfuscate(js_code, split_type='~'):
+    spli2 = None
+    obf_letters = 'aertyuiopsdfghjklbzxcvnmQWERTYUIOPASDFGHJKLZXCVBNM'
+    lett_list = list(obf_letters)
     
+    for let in lett_list:
+        try:
+            spli1 = js_code.split(f'({let}=')[1].split('.push(')[0].split('===')[0]
+            test = spli1.replace('\n', '').replace(' ', '')
+            if '),' in test[(len(test) - 5):len(test)]:
+                spli2 = (spli1.split('),')[0] + '),')
+
+            elif ',' in test[(len(test) - 5):len(test)]:
+                spli2 = (spli1.split(',')[0] + ',')
+            
+            if spli2 is not None and len(spli2) < 300 and spli2.count('parseInt') > 4:
+                break
+        except (IndexError, ValueError):
+            continue
+
+    instruction = spli2.replace('\n', '').strip().replace(' ', '')
+    identifier_properties = []
     
-    # String Array Base Iterator
-    spli1 = code.split('(f=')[1].split('.push(')[0].split('===')[0]
+    for i, part in enumerate(instruction.split('.')):
+        identifier_prop = part.split('))')[0].replace(' ', '')
+        
+        if len(identifier_prop) > 5:
+            continue
+        
+        identifier_properties.append(identifier_prop)
 
-    test = spli1.replace('\n', '').replace(' ', '')
-    if '),' in test[(len(test) - 5):len(test)]:
-        spli2 = (spli1.split('),')[0] + '),')
-
-    elif ',' in test[(len(test) - 5):len(test)]:
-        spli2 = (spli1.split(',')[0] + ',')
-
-    spli2 = spli2.replace('\n', '').strip().replace(' ', '')
-
-    variable = spli2.split('parseInt(')[1][:2]
-    _parseInt = spli2.replace(variable, 'gE')
+    call_arr_map_name = instruction.split('parseInt(')[1].split('(')[0]
+    obj_name = instruction.split('parseInt(')[1].split('(')[1].split('.')[0]
+    obj = extract_object_nums(js_code[:9500], obj_name)
     
-    # String Find Number Subtraction
-    f_less = int(code.split('f=f-')[1].split(',')[0])
+    for prop in identifier_properties:
+        num = obj[prop]
+        
+        instruction = instruction.replace(f'{obj_name}.{prop}', str(num))
+    
+    parse_int = instruction.replace(call_arr_map_name, 'gE')
+    
+    full_array = None
+    array_func_names = list(obf_letters)
+    
+    for func_name in array_func_names:
+        for i, code in enumerate(js_code.split(f'function {func_name}(')):
+            if code[:1].isalpha() and code[2:3] == ')' and len(code.split('~')) > 500:
+                variable = code[:2]
+                full_array = code.split(f"return {variable}='")[1].split('.split(')[0]
+                break
+            
+    if full_array is None:
+        raise ValueError('Not VM String Array Found')
+    
+    if full_array[(len(full_array) - 1):len(full_array)] == "'":
+        full_array = full_array.replace("'", '')
+        
+    lett_list = list(obf_letters)
+    for i, code in enumerate(js_code.split('return ')):
+        for lett in lett_list:
+            if f'{lett}={lett}-' in code:
+                unknown_type = code.split('-')[1].split(',')[0]
+                
+                if not unknown_type.isnumeric():
+                    continue
+                sub_less = unknown_type
+                break
     
     # String Array Iterator Number
-    for i,v in enumerate(code.split('parseInt(')):
+    for i,v in enumerate(js_code.split('parseInt(')):
         if '}}(' in v[:450]:
             variaba = v.split('}(')[1][:2]
             obf_number = round(float(v.split('}(' + variaba)[1].split('),')[0].replace('\n', '').strip()))
@@ -158,15 +293,16 @@ def deobfuscate(code, split_type='~'):
             
     # Deobfuscate
     
-    _deobf, find_str = deobfuscator_main(
-        string_number_subtraction=f_less,
+    _deobf, find_str = deobfuscator(
+        javascript=js_code,
+        string_number_subtraction=sub_less,
         obf_find_number=obf_number,
-        parseint_array_finder=_parseInt,
-        obfuscated_string_array=stringarraymap
+        parseint_array_finder=parse_int,
+        obfuscated_string_array=full_array,
+        _split_type=split_type
     )
-    open('output.js', 'w').write(_deobf(code))
+    open('output.js', 'w').write(_deobf(js_code))
     print('Saved in output.js')
-    
 
 if __name__ == '__main__':
-    deobfuscate(open('cf_code.txt', 'r').read())
+    code = _deobfuscate(open('cf_code.txt', 'r').read())
