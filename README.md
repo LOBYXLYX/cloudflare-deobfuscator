@@ -3,7 +3,7 @@ Put code in cf_code.txt and run deobfuscator.py, the result will be put in outpu
 ## Features
 ✔️ String Array Map Parser
 
-❌​ Dead Code Remover
+✔️​ Dead Code Remover
 
 ✔️ Improve Indentation
 
